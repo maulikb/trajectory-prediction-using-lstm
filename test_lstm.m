@@ -3,6 +3,14 @@
 % Load data from CSV file
 data = readtable('Autonoumous_Car_Data.csv');
 
+% Plot the trajectory
+figure; % Create a new figure
+plot(data.Longitude, data.Latitude, '-o', 'MarkerSize', 5, 'MarkerFaceColor', 'b');
+title('2D Trajectory Plot');
+xlabel('Longitude');
+ylabel('Latitude');
+grid on; % Turn on the grid
+
 % Calculate distance between consecutive points using Haversine formula
 R = 6371; % Earth's radius in kilometers
 for i = 1:(height(data)-1)
@@ -34,11 +42,6 @@ for i = 1:numSamples
     Y(i) = target(i+sequenceLength-1);
 end
 
-
-disp(size(features));  % Should be [numSamples, 4]
-disp(size(X));         % Should be [numSamples - sequenceLength + 1, sequenceLength, 4]
-disp(size(Y));         % Should be [numSamples - sequenceLength + 1, 1]
-
 %% Data Formulation
 
 % Split data into training, validation, and test sets
@@ -57,7 +60,6 @@ YVal = Y(numTrainSamples+1:numTrainSamples+numValSamples);
 XTest = X(numTrainSamples+numValSamples+1:end, :, :);
 YTest = Y(numTrainSamples+numValSamples+1:end);
 
-
 % For XVal
 XValCell = cell(size(XVal, 1), 1);
 for i = 1:size(XVal, 1)
@@ -69,7 +71,6 @@ XTestCell = cell(size(XTest, 1), 1);
 for i = 1:size(XTest, 1)
     XTestCell{i} = squeeze(XTest(i, :, :))';
 end
-
 
 %% LSTM Network Architecture
 % Define LSTM network architecture
@@ -89,21 +90,7 @@ options = trainingOptions('adam', ...
     'Verbose', 1, ...
     'Plots', 'training-progress');
 
-
 %% Training
-disp(size(XTrain));  % Should be [numTrainSamples, sequenceLength, numFeatures]
-disp(size(YTrain));  % Should be [numTrainSamples, 1]
-disp(class(XTrain));  % Should be 'double' or 'single'
-disp(class(YTrain));
-disp(layers);
-
-if any(isnan(XTrain), 'all') || any(isnan(YTrain), 'all')
-    error('Training data contains NaN values.');
-end
-if any(isinf(XTrain), 'all') || any(isinf(YTrain), 'all')
-    error('Training data contains Inf values.');
-end
-
 
 % Initialize the cell array
 XTrainCell = cell(size(XTrain, 1), 1);
@@ -115,13 +102,58 @@ end
 
 model = trainNetwork(XTrainCell, YTrain, layers, options);
 
-
-
 %% Evaluation
-
 
 % Evaluate the trained LSTM model on the test set
 YPred = predict(model, XTestCell);
-rmse = sqrt(mean((YPred - YTest).^2));
-fprintf('Root Mean Squared Error (RMSE) on test set: %.4f\n', rmse);
 
+% Calculate actual latitude and longitude from test data
+actualLat = data.Latitude(numTrainSamples + numValSamples + 1:end);
+actualLon = data.Longitude(numTrainSamples + numValSamples + 1:end);
+
+% Combine actual latitude and longitude into actualLatLong
+actualLatLong = [actualLat, actualLon];
+
+% Convert YPred to the same format as actualLatLong
+predictedLatLong = zeros(size(actualLatLong));
+for i = 1:size(YPred, 1)
+    predictedLatLong(i, :) = actualLatLong(i, :) + YPred(i);
+end
+
+% Calculate prediction errors
+errors = actualLatLong - predictedLatLong;
+
+% Plot the actual and predicted trajectories
+figure;
+plot(actualLatLong(:, 1), actualLatLong(:, 2), 'ro-', 'DisplayName', 'Actual');
+hold on;
+plot(predictedLatLong(:, 1), predictedLatLong(:, 2), 'bo-', 'DisplayName', 'Predicted');
+xlabel('Longitude');
+ylabel('Latitude');
+legend show;
+title('Trajectory Comparison');
+grid on;
+
+% Plot the CDF of prediction errors for latitude
+[f_lat, x_lat] = ecdf(errors(:, 1));
+figure;
+plot(x_lat, f_lat, 'DisplayName', 'Latitude Errors');
+xlabel('Prediction Error');
+ylabel('CDF');
+title('CDF of Latitude Prediction Errors');
+legend show;
+grid on;
+
+% Plot the CDF of prediction errors for longitude
+[f_lon, x_lon] = ecdf(errors(:, 2));
+figure;
+plot(x_lon, f_lon, 'DisplayName', 'Longitude Errors');
+xlabel('Prediction Error');
+ylabel('CDF');
+title('CDF of Longitude Prediction Errors');
+legend show;
+grid on;
+
+% Calculate RMSE
+rmse = sqrt(mean(errors.^2));
+fprintf('Root Mean Squared Error (RMSE) on test set: %.4f\n', rmse);

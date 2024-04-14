@@ -1,39 +1,267 @@
-% Generate synthetic data
-num_samples = 1000;
-sequence_length = 10;
-num_features = 1;
+%% Data Pre-Processing
 
-X_train = randn(sequence_length, num_features, num_samples);
-Y_train = sum(X_train, 1);
+% Load data from CSV file
+data = readtable('Autonoumous_Car_Data.csv');
 
 
+
+% Plot the trajectory
+figure; % Create a new figure
+plot(data.Longitude, data.Latitude, '-o', 'MarkerSize', 5, 'MarkerFaceColor', 'b');
+title('2D Trajectory Plot');
+xlabel('Longitude');
+ylabel('Latitude');
+grid on; % Turn on the grid
+
+% Calculate distance between consecutive points using Haversine formula
+R = 6371; % Earth's radius in kilometers
+for i = 1:(height(data)-1)
+    lat1 = deg2rad(data.Latitude(i));
+    lat2 = deg2rad(data.Latitude(i+1));
+    lon1 = deg2rad(data.Longitude(i));
+    lon2 = deg2rad(data.Longitude(i+1));
+    dlat = lat2 - lat1;
+    dlon = lon2 - lon1;
+    a = sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlon/2)^2;
+    c = 2 * atan2(sqrt(a), sqrt(1-a));
+    data.Distance(i) = R * c;
+end
+
+% Normalize features and target
+features = data{:, {'Latitude', 'Longitude', 'heading', 'v'}};
+target = data.Distance;
+[features, featureMu, featureSigma] = zscore(features);
+target = (target - mean(target)) / std(target);
+
+% Create input-output pairs with sequences
+sequenceLength = 10; % Example sequence length
+numFeatures = size(features, 2);
+numSamples = size(features, 1) - sequenceLength + 1;
+X = zeros(numSamples, sequenceLength, numFeatures);
+Y = zeros(numSamples, 1);
+for i = 1:numSamples
+    X(i, :, :) = features(i:i+sequenceLength-1, :);
+    Y(i) = target(i+sequenceLength-1);
+end
+
+
+disp(size(features));  % Should be [numSamples, 4]
+disp(size(X));         % Should be [numSamples - sequenceLength + 1, sequenceLength, 4]
+disp(size(Y));         % Should be [numSamples - sequenceLength + 1, 1]
+
+%% Data Formulation
+
+% Split data into training, validation, and test sets
+trainRatio = 0.7;
+valRatio = 0.15;
+testRatio = 0.15;
+
+numTrainSamples = floor(trainRatio * numSamples);
+numValSamples = floor(valRatio * numSamples);
+numTestSamples = numSamples - numTrainSamples - numValSamples;
+
+XTrain = X(1:numTrainSamples, :, :);
+YTrain = Y(1:numTrainSamples);
+XVal = X(numTrainSamples+1:numTrainSamples+numValSamples, :, :);
+YVal = Y(numTrainSamples+1:numTrainSamples+numValSamples);
+XTest = X(numTrainSamples+numValSamples+1:end, :, :);
+YTest = Y(numTrainSamples+numValSamples+1:end);
+
+
+% For XVal
+XValCell = cell(size(XVal, 1), 1);
+for i = 1:size(XVal, 1)
+    XValCell{i} = squeeze(XVal(i, :, :))';
+end
+
+% For XTest
+XTestCell = cell(size(XTest, 1), 1);
+for i = 1:size(XTest, 1)
+    XTestCell{i} = squeeze(XTest(i, :, :))';
+end
+
+
+%% LSTM Network Architecture
 % Define LSTM network architecture
-inputSize = num_features;
-numHiddenUnits = 100;
-numClasses = 1;
-
-layers = [
-    sequenceInputLayer(inputSize)
-    lstmLayer(numHiddenUnits, 'OutputMode', 'last')
-    fullyConnectedLayer(numClasses)
+layers = [ ...
+    sequenceInputLayer(numFeatures)
+    lstmLayer(50, 'OutputMode', 'sequence')
+    lstmLayer(50, 'OutputMode', 'last')
+    fullyConnectedLayer(1)
     regressionLayer];
 
-% Specify training options
+% Compile the model
 options = trainingOptions('adam', ...
-    'MaxEpochs', 10, ...
+    'MaxEpochs',20, ...
     'MiniBatchSize', 32, ...
-    'Verbose', true);
-
-% Train the LSTM network
-net = trainNetwork(X_train', Y_train', layers, options);
-
-% Generate test data
-X_test = randn(sequence_length, num_features, 1);
-
-% Make predictions using the trained model
-YPred = predict(net, X_test);
-
-disp('Predicted Output:');
-disp(YPred);
+    'ValidationData', {XValCell, YVal}, ...
+    'ValidationFrequency', 10, ...
+    'Verbose', 1, ...
+    'Plots', 'training-progress');
 
 
+%% Training
+disp(size(XTrain));  % Should be [numTrainSamples, sequenceLength, numFeatures]
+disp(size(YTrain));  % Should be [numTrainSamples, 1]
+disp(class(XTrain));  % Should be 'double' or 'single'
+disp(class(YTrain));
+disp(layers);
+
+if any(isnan(XTrain), 'all') || any(isnan(YTrain), 'all')
+    error('Training data contains NaN values.');
+end
+if any(isinf(XTrain), 'all') || any(isinf(YTrain), 'all')
+    error('Training data contains Inf values.');
+end
+
+
+% Initialize the cell array
+XTrainCell = cell(size(XTrain, 1), 1);
+
+% Convert each sequence to the required format
+for i = 1:size(XTrain, 1)
+    XTrainCell{i} = squeeze(XTrain(i, :, :))';
+end
+
+model = trainNetwork(XTrainCell, YTrain, layers, options);
+
+
+
+%% Evaluation
+
+
+% Evaluate the trained LSTM model on the test set
+YPred = predict(model, XTestCell);
+rmse = sqrt(mean((YPred - YTest).^2));
+fprintf('Root Mean Squared Error (RMSE) on test set: %.4f\n', rmse);
+
+
+%% Evaluation
+
+% Evaluate the trained LSTM model on the test set
+YPred = predict(model, XTestCell);
+% Reshape YPred and YTest if necessary to ensure they are of the same size.
+% Calculate errors
+errors_x = YPred(:, 1) - YTest(:, 1);  % Error in lateral position
+errors_vy = YPred(:, 2) - YTest(:, 2); % Error in longitudinal speed
+rmse_x = sqrt(mean(errors_x.^2));
+rmse_vy = sqrt(mean(errors_vy.^2));
+
+fprintf('Root Mean Squared Error (RMSE) for lateral position on test set: %.4f\n', rmse_x);
+fprintf('Root Mean Squared Error (RMSE) for longitudinal speed on test set: %.4f\n', rmse_vy);
+
+% Re-scale predictions and actuals back to their original scale
+YPred_rescaled = YPred .* targetSigma + targetMu;
+YTest_rescaled = YTest .* targetSigma + targetMu;
+
+% Time vector for plotting
+time_vector = (1:length(YPred_rescaled))'; % Replace with actual time vector if available
+
+% Plot the results
+figure;
+subplot(2,1,1);
+plot(time_vector, YTest_rescaled(:, 1), 'g', 'DisplayName', 'Actual Lateral Position');
+hold on;
+plot(time_vector, YPred_rescaled(:, 1), 'r', 'DisplayName', 'Predicted Lateral Position');
+title('Lateral Position');
+xlabel('t (s)');
+ylabel('x (m)');
+legend;
+grid on;
+
+subplot(2,1,2);
+plot(time_vector, YTest_rescaled(:, 2), 'g', 'DisplayName', 'Actual Longitudinal Speed');
+hold on;
+plot(time_vector, YPred_rescaled(:, 2), 'r', 'DisplayName', 'Predicted Longitudinal Speed');
+title('Longitudinal Speed');
+xlabel('t (s)');
+ylabel('vy (m/s)');
+legend;
+grid on;
+
+% % Predict distances on the test set
+% YPredDistances = predict(model, XTestCell);
+% 
+% % Calculate initial point (assuming you have initial latitude and longitude)
+% initialLat = data.Latitude(numTrainSamples + numValSamples + 1);
+% initialLon = data.Longitude(numTrainSamples + numValSamples + 1);
+% 
+% % Initialize arrays to store reconstructed positions
+% predictedLat = zeros(length(YPredDistances) + 1, 1);
+% predictedLon = zeros(length(YPredDistances) + 1, 1);
+% predictedLat(1) = initialLat;
+% predictedLon(1) = initialLon;
+% 
+% % Reconstruct the trajectory assuming small angle approximation
+% for i = 1:length(YPredDistances)
+%     % This is a simple approximation; you might need a more accurate way to compute this
+%     predictedLat(i + 1) = predictedLat(i) + YPredDistances(i) * 0.00001; % scaling factor for latitude change
+%     predictedLon(i + 1) = predictedLon(i) + YPredDistances(i) * 0.00001; % scaling factor for longitude change
+% end
+% 
+% % Actual positions from test set
+% actualLat = data.Latitude(numTrainSamples + numValSamples + 1:end);
+% actualLon = data.Longitude(numTrainSamples + numValSamples + 1:end);
+% 
+% % Plotting
+% figure;
+% plot(actualLon, actualLat, '-o', 'MarkerSize', 5, 'MarkerFaceColor', 'b', 'DisplayName', 'Actual Trajectory');
+% hold on;
+% plot(predictedLon, predictedLat, '-o', 'MarkerSize', 5, 'MarkerFaceColor', 'r', 'DisplayName', 'Predicted Trajectory');
+% legend;
+% title('Actual vs Predicted Trajectories');
+% xlabel('Longitude');
+% ylabel('Latitude');
+% grid on;
+% 
+% % Calculate RMSE for latitude and longitude
+% latError = sqrt(mean((actualLat - predictedLat).^2));
+% lonError = sqrt(mean((actualLon - predictedLon).^2));
+% 
+% fprintf('Latitude RMSE: %.4f degrees\n', latError);
+% fprintf('Longitude RMSE: %.4f degrees\n', lonError);
+
+
+
+% Evaluate the trained LSTM model on the test set
+YPred = predict(model, XTestCell);
+% Assuming YTest contains the actual distances
+errors = YPred - YTest;  % Calculate the errors
+rmse = sqrt(mean(errors.^2));
+fprintf('Root Mean Squared Error (RMSE) on test set: %.4f\n', rmse);
+
+% The rest of your evaluation code remains unchanged...
+
+%% CDF Plotting
+
+% Now we plot the CDF of prediction errors
+% You need to ensure that 'errors' is the array containing your prediction errors
+time_horizons = [2, 4, 6, 8, 10];  % Your prediction horizons
+
+% Initialize arrays for plotting
+all_errors = {};  % A cell array to store error data for each time horizon
+all_cdfs = {};    % A cell array to store CDF data for each time horizon
+
+% Calculate CDF for each time horizon
+for i = 1:length(time_horizons)
+    % Here, we are generating synthetic data for demonstration purposes
+    % You should replace 'randn(size(errors))' with your actual error array for each time horizon
+    horizon_errors = errors + randn(size(errors));  % Synthetic error data
+    [f, x] = ecdf(horizon_errors);
+    
+    % Store the calculated CDF data
+    all_errors{end+1} = horizon_errors;
+    all_cdfs{end+1} = [x, f];
+end
+
+% Plot the CDFs
+figure;
+hold on;
+for i = 1:length(all_cdfs)
+    plot(all_cdfs{i}(:, 1), all_cdfs{i}(:, 2) * 100, 'DisplayName', [num2str(time_horizons(i)) 's']);  % Multiply by 100 to get percentage
+end
+title('CDF of Prediction Errors');
+xlabel('Prediction Error');
+ylabel('Probability (%)');
+legend('Location', 'southeast');
+grid on;
